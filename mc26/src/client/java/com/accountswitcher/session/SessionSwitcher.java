@@ -13,6 +13,7 @@ import net.minecraft.client.User;
 import net.minecraft.client.multiplayer.ProfileKeyPairManager;
 
 import java.net.Proxy;
+import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -96,6 +97,25 @@ public final class SessionSwitcher {
 		} catch (Throwable t) {
 			AccountSwitcherClient.LOGGER.warn("Could not refresh cached user properties after switch", t);
 		}
+	}
+
+	/**
+	 * Drops the client back to an offline session. Used when the account that owns the live session is
+	 * deleted and no other account remains — otherwise the client would stay signed in as the removed
+	 * account.
+	 */
+	public static void applyOffline(Minecraft client) {
+		String name = "Player";
+		UUID offlineId = UUID.nameUUIDFromBytes(("OfflinePlayer:" + name).getBytes(StandardCharsets.UTF_8));
+		User user = new User(name, offlineId, "", Optional.empty(), Optional.empty());
+		MinecraftAccessor accessor = (MinecraftAccessor) (Object) client;
+		accessor.accountSwitcher$setUser(user);
+		try {
+			accessor.accountSwitcher$setUserApiService(UserApiService.OFFLINE);
+		} catch (Throwable t) {
+			AccountSwitcherClient.LOGGER.warn("Could not reset UserApiService when signing out", t);
+		}
+		AccountSwitcherClient.LOGGER.info("Signed out to offline session");
 	}
 
 	private static UserApiService createUserApiService(YggdrasilAuthenticationService authService, String accessToken) {

@@ -10,8 +10,10 @@ import com.accountswitcher.storage.AccountRecord;
 import com.accountswitcher.storage.AccountStore;
 import net.minecraft.client.Minecraft;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -142,7 +144,36 @@ public final class AccountManager {
 	}
 
 	public void remove(String id) {
+		AccountRecord removed = store.findById(id).orElse(null);
+		boolean wasActiveSession = isCurrentSession(id, removed);
 		store.remove(id);
+		if (!wasActiveSession) {
+			return;
+		}
+		// The deleted account was the live session — don't leave the client signed into it.
+		List<AccountRecord> remaining = store.getAccounts();
+		if (!remaining.isEmpty()) {
+			AccountRecord next = remaining.stream()
+					.max(Comparator.comparingLong(AccountRecord::getLastUsedAt))
+					.orElse(remaining.get(0));
+			switchTo(next);
+		} else {
+			SessionSwitcher.applyOffline(Minecraft.getInstance());
+			store.setActive(null);
+			statusMessage = "Signed out";
+		}
+	}
+
+	private boolean isCurrentSession(String id, AccountRecord removed) {
+		if (id.equals(store.getActiveAccountId())) {
+			return true;
+		}
+		if (removed == null || removed.getUuid() == null) {
+			return false;
+		}
+		var user = Minecraft.getInstance().getUser();
+		UUID current = user == null ? null : user.getProfileId();
+		return removed.getUuid().equals(current);
 	}
 
 	public void toggleFavorite(AccountRecord account) {

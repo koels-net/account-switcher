@@ -10,6 +10,8 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.User;
 
 import java.net.Proxy;
+import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 
 /**
  * Applies a saved account to the running client without restarting.
@@ -44,6 +46,23 @@ public final class SessionSwitcher {
 		} catch (Throwable t) {
 			AccountSwitcherClient.LOGGER.error("Account switch failed for {}", account.getUsername(), t);
 			throw t instanceof RuntimeException re ? re : new IllegalStateException(t);
+		}
+	}
+
+	/**
+	 * Drops the client back to an offline session. Used when the account that owns the live session is
+	 * deleted and no other account remains — otherwise the client would stay signed in as the removed
+	 * account.
+	 */
+	public static void applyOffline(Minecraft client) {
+		try {
+			String name = "Player";
+			UUID offlineId = UUID.nameUUIDFromBytes(("OfflinePlayer:" + name).getBytes(StandardCharsets.UTF_8));
+			User user = UserCompat.createMicrosoftUser(name, offlineId, "", null, null);
+			SessionCompat.apply(client, user, UserApiService.OFFLINE, client.gameDirectory.toPath());
+			AccountSwitcherClient.LOGGER.info("Signed out to offline session");
+		} catch (Throwable t) {
+			AccountSwitcherClient.LOGGER.warn("Failed to reset to offline session after deleting active account", t);
 		}
 	}
 
