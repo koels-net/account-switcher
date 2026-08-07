@@ -1,4 +1,4 @@
-# Account Switcher (Fabric)
+# In-Game Account Switcher (Fabric)
 
 Vanilla-style Microsoft account switching — **two separate jars** for the two Minecraft toolchains.
 
