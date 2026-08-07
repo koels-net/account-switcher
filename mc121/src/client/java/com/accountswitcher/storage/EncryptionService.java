@@ -8,11 +8,12 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
+import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Arrays;
@@ -20,15 +21,32 @@ import java.util.Base64;
 
 /**
  * AES-256-GCM encryption for access/refresh tokens.
- * Key material is stored in {@code encryption.dat}, wrapped with a machine-derived key.
- * This protects against casual theft of the config folder — not against malware on the same machine.
+ *
+ * <p>The random data key lives in {@code encryption.dat}, itself wrapped so a copied file is not
+ * usable on its own:
+ * <ul>
+ *   <li><b>Windows (preferred):</b> DPAPI ({@code CryptProtectData}) ties the wrap to the current
+ *       Windows login account — copying the file to another user or machine makes it undecryptable.</li>
+ *   <li><b>Fallback (non-Windows / DPAPI unavailable):</b> XOR against a machine-derived key. Weaker,
+ *       but keeps a copied {@code accounts.json} alone unusable.</li>
+ * </ul>
+ * Neither protects against malware running as the same user — that can read the key alongside the
+ * data, exactly as it could read the vanilla launcher's session.
  */
 public final class EncryptionService {
 	private static final String TRANSFORM = "AES/GCM/NoPadding";
 	private static final int GCM_TAG_BITS = 128;
 	private static final int IV_BYTES = 12;
 	private static final int KEY_BYTES = 32;
-	private static final byte[] MAGIC = new byte[]{'A', 'S', 'E', '1'};
+
+	/** Legacy container magic (XOR-only, no scheme byte). Still read for migration. */
+	private static final byte[] MAGIC_V1 = {'A', 'S', 'E', '1'};
+	/** Current container magic: MAGIC_V2 + scheme byte + payload. */
+	private static final byte[] MAGIC_V2 = {'A', 'S', 'E', '2'};
+	private static final byte SCHEME_XOR = 1;
+	private static final byte SCHEME_DPAPI = 2;
+
+	private static final String CRYPT32_UTIL = "com.sun.jna.platform.win32.Crypt32Util";
 
 	private final SecretKey key;
 	private final SecureRandom random = new SecureRandom();
@@ -76,38 +94,96 @@ public final class EncryptionService {
 		}
 	}
 
-	private static SecretKey loadOrCreateKey() {
+	private SecretKey loadOrCreateKey() {
 		Path path = StoragePaths.encryptionFile();
 		try {
 			Files.createDirectories(path.getParent());
 			if (Files.exists(path)) {
 				byte[] data = Files.readAllBytes(path);
-				if (data.length < MAGIC.length + KEY_BYTES + 32) {
-					throw new IOException("encryption.dat too short");
+				byte scheme = schemeOf(data);
+				byte[] keyBytes = readKey(data, scheme);
+				// Upgrade legacy/XOR containers to DPAPI once it's available on this machine.
+				if (scheme != SCHEME_DPAPI && dpapiAvailable()) {
+					try {
+						writeKey(path, keyBytes);
+						AccountSwitcherClient.LOGGER.info("Upgraded encryption.dat key wrapping to Windows DPAPI");
+					} catch (Exception e) {
+						AccountSwitcherClient.LOGGER.warn("Could not upgrade encryption.dat to DPAPI; keeping existing wrap", e);
+					}
 				}
-				if (!Arrays.equals(Arrays.copyOf(data, MAGIC.length), MAGIC)) {
-					throw new IOException("encryption.dat magic mismatch");
-				}
-				byte[] wrapped = Arrays.copyOfRange(data, MAGIC.length, data.length);
-				byte[] keyBytes = unwrap(wrapped);
 				return new SecretKeySpec(keyBytes, "AES");
 			}
 
 			KeyGenerator generator = KeyGenerator.getInstance("AES");
 			generator.init(256, new SecureRandom());
 			SecretKey generated = generator.generateKey();
-			byte[] wrapped = wrap(generated.getEncoded());
-			ByteBuffer out = ByteBuffer.allocate(MAGIC.length + wrapped.length);
-			out.put(MAGIC);
-			out.put(wrapped);
-			Files.write(path, out.array(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+			writeKey(path, generated.getEncoded());
 			return generated;
 		} catch (Exception e) {
-			throw new IllegalStateException("Unable to initialize encryption key", e);
+			throw new IllegalStateException(
+					"Unable to initialize encryption key. If encryption.dat was copied from another "
+							+ "Windows user/machine it cannot be decrypted; delete it and log in again.", e);
 		}
 	}
 
-	private static byte[] wrap(byte[] keyBytes) throws Exception {
+	private static byte schemeOf(byte[] data) throws IOException {
+		if (startsWith(data, MAGIC_V2) && data.length > MAGIC_V2.length) {
+			return data[MAGIC_V2.length];
+		}
+		if (startsWith(data, MAGIC_V1)) {
+			return SCHEME_XOR;
+		}
+		throw new IOException("encryption.dat magic mismatch");
+	}
+
+	private static byte[] readKey(byte[] data, byte scheme) throws Exception {
+		byte[] payload = startsWith(data, MAGIC_V2)
+				? Arrays.copyOfRange(data, MAGIC_V2.length + 1, data.length)
+				: Arrays.copyOfRange(data, MAGIC_V1.length, data.length);
+
+		byte[] keyBytes = switch (scheme) {
+			case SCHEME_DPAPI -> dpapiUnprotect(payload);
+			case SCHEME_XOR -> xorUnwrap(payload);
+			default -> throw new IOException("Unknown encryption.dat scheme " + scheme);
+		};
+		if (keyBytes == null || keyBytes.length != KEY_BYTES) {
+			throw new IOException("Recovered key has wrong length");
+		}
+		return keyBytes;
+	}
+
+	private static void writeKey(Path path, byte[] keyBytes) throws Exception {
+		byte scheme;
+		byte[] payload;
+		if (dpapiAvailable()) {
+			byte[] blob = dpapiProtect(keyBytes);
+			if (blob == null || blob.length == 0) {
+				throw new IOException("DPAPI returned empty blob");
+			}
+			scheme = SCHEME_DPAPI;
+			payload = blob;
+		} else {
+			scheme = SCHEME_XOR;
+			payload = xorWrap(keyBytes);
+		}
+
+		ByteBuffer out = ByteBuffer.allocate(MAGIC_V2.length + 1 + payload.length);
+		out.put(MAGIC_V2);
+		out.put(scheme);
+		out.put(payload);
+
+		Path tmp = path.resolveSibling(path.getFileName() + ".tmp");
+		Files.write(tmp, out.array());
+		try {
+			Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+		} catch (Exception atomicFailed) {
+			Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING);
+		}
+	}
+
+	// --- XOR machine-key wrap (fallback) -------------------------------------------------------
+
+	private static byte[] xorWrap(byte[] keyBytes) throws Exception {
 		byte[] wrapper = machineKey();
 		byte[] out = new byte[keyBytes.length];
 		for (int i = 0; i < keyBytes.length; i++) {
@@ -121,7 +197,7 @@ public final class EncryptionService {
 		return buffer.array();
 	}
 
-	private static byte[] unwrap(byte[] wrapped) throws Exception {
+	private static byte[] xorUnwrap(byte[] wrapped) throws Exception {
 		if (wrapped.length < KEY_BYTES + 32) {
 			throw new IOException("Wrapped key truncated");
 		}
@@ -140,10 +216,6 @@ public final class EncryptionService {
 		return keyBytes;
 	}
 
-	/**
-	 * Machine-derived material so a stolen encryption.dat alone is not enough
-	 * without also matching this environment. Not a TPM / OS keystore.
-	 */
 	private static byte[] machineKey() throws Exception {
 		String material = System.getProperty("user.name", "user")
 				+ '|' + System.getProperty("user.home", "home")
@@ -151,5 +223,40 @@ public final class EncryptionService {
 				+ "|account-switcher-v1";
 		MessageDigest digest = MessageDigest.getInstance("SHA-256");
 		return digest.digest(material.getBytes(StandardCharsets.UTF_8));
+	}
+
+	// --- Windows DPAPI via JNA (already on the classpath through Minecraft's oshi dep) ----------
+
+	private static boolean isWindows() {
+		return System.getProperty("os.name", "").toLowerCase().contains("win");
+	}
+
+	private static boolean dpapiAvailable() {
+		if (!isWindows()) {
+			return false;
+		}
+		try {
+			byte[] probe = dpapiProtect(new byte[]{0x41, 0x53, 0x00, 0x01});
+			return probe != null && probe.length > 0;
+		} catch (Throwable t) {
+			return false;
+		}
+	}
+
+	private static byte[] dpapiProtect(byte[] data) throws Exception {
+		Method m = Class.forName(CRYPT32_UTIL).getMethod("cryptProtectData", byte[].class);
+		return (byte[]) m.invoke(null, (Object) data);
+	}
+
+	private static byte[] dpapiUnprotect(byte[] data) throws Exception {
+		Method m = Class.forName(CRYPT32_UTIL).getMethod("cryptUnprotectData", byte[].class);
+		return (byte[]) m.invoke(null, (Object) data);
+	}
+
+	private static boolean startsWith(byte[] data, byte[] prefix) {
+		if (data.length < prefix.length) {
+			return false;
+		}
+		return Arrays.equals(Arrays.copyOf(data, prefix.length), prefix);
 	}
 }
