@@ -1,0 +1,22 @@
+# Gradle
+.gradle/
+**/build/
+!src/**/build/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.ipr
+*.iws
+.settings/
+.classpath
+.project
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Loom / Minecraft dev
+run/
+*.log

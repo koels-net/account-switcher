@@ -1,0 +1,11 @@
+{
+	"required": true,
+	"package": "com.accountswitcher.mixin",
+	"compatibilityLevel": "JAVA_21",
+	"client": [
+		"MinecraftAccessor"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}
