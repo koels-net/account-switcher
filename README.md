@@ -7,8 +7,6 @@ Vanilla-style Microsoft account switching — **two separate jars** for the two 
 | `account-switcher-1.21-*.jar` | **1.21.4 – 1.21.11** | 21+ | Remap (obfuscated) |
 | `account-switcher-26-*.jar` | **26.1 – 26.2** | 25+ | No remap (unobfuscated) |
 
-> There is no Minecraft `1.24.4`. This project covers **1.21.4** through **1.21.11**, then the calendar line **26.1–26.2**.
-
 ## Build
 
 ```bat
