@@ -166,8 +166,24 @@ public final class AccountManager {
 	}
 
 	public void switchTo(AccountRecord account) {
-		ensureFreshAsync(account, refreshed -> Minecraft.getInstance().execute(() -> doSwitch(refreshed, null)),
-				error -> Minecraft.getInstance().execute(() -> doSwitch(account, error)));
+		switchTo(account, () -> {
+		});
+	}
+
+	public void switchTo(AccountRecord account, Runnable onDone) {
+		ensureFreshAsync(account,
+				refreshed -> Minecraft.getInstance().execute(() -> {
+					doSwitch(refreshed, null);
+					if (onDone != null) {
+						onDone.run();
+					}
+				}),
+				error -> Minecraft.getInstance().execute(() -> {
+					doSwitch(account, error);
+					if (onDone != null) {
+						onDone.run();
+					}
+				}));
 	}
 
 	private void doSwitch(AccountRecord account, String refreshWarning) {

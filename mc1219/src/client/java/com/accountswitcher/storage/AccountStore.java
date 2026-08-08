@@ -165,11 +165,17 @@ public final class AccountStore {
 				filtered.add(account);
 			}
 		}
+		String activeId = activeAccountId;
+		Comparator<AccountRecord> activeFirst = Comparator.comparing((AccountRecord a) ->
+				activeId == null || !activeId.equals(a.getId()));
 		Comparator<AccountRecord> favoritesFirst = Comparator.comparing((AccountRecord a) -> !a.isFavorite());
 		Comparator<AccountRecord> comparator = switch (mode) {
-			case NAME -> favoritesFirst.thenComparing(a -> a.getUsername() == null ? "" : a.getUsername(), String.CASE_INSENSITIVE_ORDER);
-			case LAST_USED -> favoritesFirst.thenComparing(AccountRecord::getLastUsedAt, Comparator.reverseOrder());
-			case RECENTLY_ADDED -> favoritesFirst.thenComparing(AccountRecord::getAddedAt, Comparator.reverseOrder());
+			case NAME -> activeFirst.thenComparing(favoritesFirst)
+					.thenComparing(a -> a.getUsername() == null ? "" : a.getUsername(), String.CASE_INSENSITIVE_ORDER);
+			case LAST_USED -> activeFirst.thenComparing(favoritesFirst)
+					.thenComparing(AccountRecord::getLastUsedAt, Comparator.reverseOrder());
+			case RECENTLY_ADDED -> activeFirst.thenComparing(favoritesFirst)
+					.thenComparing(AccountRecord::getAddedAt, Comparator.reverseOrder());
 		};
 		filtered.sort(comparator);
 		return filtered;

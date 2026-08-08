@@ -147,9 +147,11 @@ public final class AccountSwitcherScreen extends Screen {
 			feedback = Component.translatable("accountswitcher.noneSelected").getString();
 			return;
 		}
-		AccountSwitcherClient.accounts().switchTo(account);
 		feedback = Component.translatable("accountswitcher.switched", account.getUsername()).getString();
-		rebuildList();
+		AccountSwitcherClient.accounts().switchTo(account, () -> {
+			rebuildList();
+			selectInList(account);
+		});
 	}
 
 	private void favoriteSelected() {
