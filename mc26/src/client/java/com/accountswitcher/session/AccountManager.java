@@ -74,9 +74,9 @@ public final class AccountManager {
 		authenticate(null, onChallenge, onSuccess, onError);
 	}
 
-	public void reauthenticate(AccountRecord account, Consumer<AccountRecord> onSuccess, Consumer<String> onError) {
-		authenticate(account, challenge -> {
-		}, onSuccess, onError);
+	public void reauthenticate(AccountRecord account, Consumer<DeviceCodeChallenge> onChallenge,
+	                           Consumer<AccountRecord> onSuccess, Consumer<String> onError) {
+		authenticate(account, onChallenge, onSuccess, onError);
 	}
 
 	/**
@@ -96,7 +96,10 @@ public final class AccountManager {
 
 				MinecraftAuthResult result;
 				String refreshToken = existing == null ? null : existing.getRefreshToken();
-				if (refreshToken != null && !refreshToken.isBlank()) {
+				// INVALID means a prior refresh already failed — skip straight to browser reauth.
+				boolean forceInteractive = existing != null
+						&& existing.getStatus() == AccountRecord.AccountStatus.INVALID;
+				if (!forceInteractive && refreshToken != null && !refreshToken.isBlank()) {
 					try {
 						result = auth.refresh(refreshToken);
 					} catch (Exception refreshFailed) {

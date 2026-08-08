@@ -149,11 +149,27 @@ public final class AccountSwitcherScreen extends Screen {
 		if (account == null) {
 			return;
 		}
+		if (addingAccount) {
+			AccountSwitcherClient.accounts().cancelAuthentication();
+			addingAccount = false;
+			feedback = Component.translatable("accountswitcher.login.cancelled").getString();
+			return;
+		}
+		addingAccount = true;
 		feedback = Component.translatable("accountswitcher.refreshing").getString();
-		AccountSwitcherClient.accounts().reauthenticate(account, updated -> {
+		AccountSwitcherClient.accounts().reauthenticate(account, challenge -> {
+			if (this.minecraft != null) {
+				this.minecraft.keyboardHandler.setClipboard(challenge.getUserCode());
+			}
+			feedback = Component.translatable("accountswitcher.login.codeReady", challenge.getUserCode()).getString();
+		}, updated -> {
+			addingAccount = false;
 			feedback = Component.translatable("accountswitcher.refreshed", updated.getUsername()).getString();
 			rebuildList();
-		}, error -> feedback = error);
+		}, error -> {
+			addingAccount = false;
+			feedback = error == null ? Component.translatable("accountswitcher.login.failed").getString() : error;
+		});
 	}
 
 	private void removeSelected() {
