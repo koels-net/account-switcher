@@ -1,11 +1,22 @@
-// Root aggregator — build with: gradlew buildAll
-// Outputs:
-//   mc121/build/libs/account-switcher-1.21.4-*.jar   (Minecraft 1.21.4–1.21.8)
-//   mc1219/build/libs/account-switcher-1.21.9-*.jar  (Minecraft 1.21.9–1.21.11)
-//   mc26/build/libs/account-switcher-26-*.jar        (Minecraft 26.1–26.2)
-
-tasks.register('buildAll') {
-	dependsOn ':mc121:build', ':mc1219:build', ':mc26:build'
-	group = 'build'
-	description = 'Build all three Minecraft version lines'
-}
+// Root aggregator — build with: gradlew buildAll
+
+// Outputs:
+
+//   mc121/build/libs/account-switcher-1.21.4-*.jar   (Minecraft 1.21.4–1.21.8)
+
+//   mc1219/build/libs/account-switcher-1.21.9-*.jar  (Minecraft 1.21.9–1.21.11)
+
+//   mc26/build/libs/account-switcher-26-*.jar        (Minecraft 26.1–26.2)
+
+
+
+tasks.register('buildAll') {
+
+	dependsOn ':mc121:build', ':mc1219:build', ':mc26:build'
+
+	group = 'build'
+
+	description = 'Build all three Minecraft version lines'
+
+}
+

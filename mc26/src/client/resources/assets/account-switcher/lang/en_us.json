@@ -32,8 +32,8 @@
 	"accountswitcher.status.invalid": "Invalid",
 	"accountswitcher.status.offline": "Offline",
 	"accountswitcher.status.unknown": "Unknown",
-	"accountswitcher.login.waitingBrowser": "Browser opened — finish signing in there…",
-	"accountswitcher.login.codeReady": "Code %s is in the browser (also copied). Finish signing in…",
+	"accountswitcher.login.waitingBrowser": "Starting Microsoft login…",
+	"accountswitcher.login.codeReady": "Enter code %s at microsoft.com/link (copied; browser opened)",
 	"accountswitcher.login.cancelled": "Login cancelled",
 	"accountswitcher.login.failed": "Login failed"
 }

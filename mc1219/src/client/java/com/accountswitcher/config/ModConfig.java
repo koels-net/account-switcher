@@ -71,6 +71,8 @@ public final class ModConfig {
 				microsoftClientId = id.trim();
 			}
 		}
+		// Migrate away from client ids shipped by earlier builds that no longer work.
+		microsoftClientId = AuthConstants.resolveClientId(microsoftClientId);
 		configVersion = CONFIG_VERSION;
 	}
 

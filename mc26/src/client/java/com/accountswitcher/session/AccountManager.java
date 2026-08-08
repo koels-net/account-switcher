@@ -5,9 +5,11 @@ import com.accountswitcher.auth.DeviceCodeChallenge;
 import com.accountswitcher.auth.MicrosoftAuthService;
 import com.accountswitcher.auth.MinecraftAuthResult;
 import com.accountswitcher.cache.SkinCacheManager;
+import com.accountswitcher.config.AuthConstants;
 import com.accountswitcher.config.ModConfig;
 import com.accountswitcher.storage.AccountRecord;
 import com.accountswitcher.storage.AccountStore;
+import com.accountswitcher.ui.ProfileSkins;
 import net.minecraft.client.Minecraft;
 
 import java.util.Comparator;
@@ -20,7 +22,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 /**
- * High-level account operations: add, switch, refresh, remove, background token refresh.
+ * High-level account operations. Adding and re-authenticating both run one pipeline
+ * ({@link #authenticate}): a silent refresh when a refresh token exists, otherwise an interactive
+ * Live Connect device-code sign-in.
  */
 public final class AccountManager {
 	private final ModConfig config;
@@ -46,6 +50,7 @@ public final class AccountManager {
 		store.load();
 		for (AccountRecord account : store.getAccounts()) {
 			skinCache.requestHead(account.getUuid(), account.getUsername(), account.getSkinTextureHash());
+			ProfileSkins.prefetch(account.getUuid(), account.getUsername());
 		}
 	}
 
@@ -66,26 +71,69 @@ public final class AccountManager {
 	}
 
 	public void startAddAccount(Consumer<DeviceCodeChallenge> onChallenge, Consumer<AccountRecord> onSuccess, Consumer<String> onError) {
+		authenticate(null, onChallenge, onSuccess, onError);
+	}
+
+	public void reauthenticate(AccountRecord account, Consumer<AccountRecord> onSuccess, Consumer<String> onError) {
+		authenticate(account, challenge -> {
+		}, onSuccess, onError);
+	}
+
+	/**
+	 * The single Microsoft authentication pipeline. {@code existing == null} adds a new account;
+	 * otherwise the existing account is updated in place after the same flow.
+	 */
+	private void authenticate(AccountRecord existing, Consumer<DeviceCodeChallenge> onChallenge,
+	                          Consumer<AccountRecord> onSuccess, Consumer<String> onError) {
 		cancelAuth.set(false);
 		executor.execute(() -> {
 			try {
-				MicrosoftAuthService auth = new MicrosoftAuthService(config.getMicrosoftClientId());
-				DeviceCodeChallenge challenge = auth.beginDeviceCode();
-				statusMessage = "Waiting for Microsoft login…";
-				Minecraft.getInstance().execute(() -> onChallenge.accept(challenge));
-				auth.openBrowser(challenge.getBrowserUri());
-				MinecraftAuthResult result = auth.pollAndAuthenticate(challenge, cancelAuth::get);
-				AccountRecord account = fromResult(result);
-				store.addOrUpdate(account);
-				skinCache.requestHead(account.getUuid(), account.getUsername(), account.getSkinTextureHash());
+				String clientId = AuthConstants.resolveClientId(
+						existing != null && existing.getClientId() != null && !existing.getClientId().isBlank()
+								? existing.getClientId()
+								: config.getMicrosoftClientId());
+				MicrosoftAuthService auth = new MicrosoftAuthService(clientId);
+
+				MinecraftAuthResult result;
+				String refreshToken = existing == null ? null : existing.getRefreshToken();
+				if (refreshToken != null && !refreshToken.isBlank()) {
+					try {
+						result = auth.refresh(refreshToken);
+					} catch (Exception refreshFailed) {
+						AccountSwitcherClient.LOGGER.info("Silent refresh failed, falling back to interactive sign-in");
+						result = interactive(auth, onChallenge);
+					}
+				} else {
+					result = interactive(auth, onChallenge);
+				}
+
+				AccountRecord record = fromResult(result);
+				if (existing != null) {
+					record.setId(existing.getId());
+					record.setFavorite(existing.isFavorite());
+					record.setAddedAt(existing.getAddedAt());
+				}
+				store.addOrUpdate(record);
+				skinCache.requestHead(record.getUuid(), record.getUsername(), record.getSkinTextureHash());
+
 				Minecraft.getInstance().execute(() -> {
-					switchTo(account);
-					onSuccess.accept(account);
+					if (existing == null) {
+						switchTo(record);
+					} else if (record.getId().equals(store.getActiveAccountId())
+							|| record.getUuid().equals(currentSessionUuid())) {
+						SessionSwitcher.apply(Minecraft.getInstance(), record);
+						store.setActive(record.getId());
+					}
+					onSuccess.accept(record);
 				});
 			} catch (MicrosoftAuthService.AuthCancelledException e) {
 				Minecraft.getInstance().execute(() -> onError.accept("Cancelled"));
 			} catch (Exception e) {
-				AccountSwitcherClient.LOGGER.error("Add account failed", e);
+				if (existing != null) {
+					existing.setStatus(AccountRecord.AccountStatus.INVALID);
+					store.save();
+				}
+				AccountSwitcherClient.LOGGER.error("Authentication failed", e);
 				Minecraft.getInstance().execute(() -> onError.accept(e.getMessage() == null ? "Authentication failed" : e.getMessage()));
 			} finally {
 				statusMessage = "";
@@ -93,54 +141,43 @@ public final class AccountManager {
 		});
 	}
 
-	public void switchTo(AccountRecord account) {
-		ensureFreshAsync(account, refreshed -> {
-			SessionSwitcher.apply(Minecraft.getInstance(), refreshed);
-			store.setActive(refreshed.getId());
-			statusMessage = "Signed in as " + refreshed.getUsername();
-		}, error -> statusMessage = error);
+	private MinecraftAuthResult interactive(MicrosoftAuthService auth, Consumer<DeviceCodeChallenge> onChallenge) throws Exception {
+		DeviceCodeChallenge challenge = auth.requestDeviceCode();
+		statusMessage = "Enter code " + challenge.getUserCode() + " at microsoft.com/link";
+		Minecraft.getInstance().execute(() -> {
+			try {
+				Minecraft.getInstance().keyboardHandler.setClipboard(challenge.getUserCode());
+			} catch (Throwable ignored) {
+			}
+			onChallenge.accept(challenge);
+		});
+		auth.openBrowser(challenge.getBrowserUri());
+		return auth.authenticateWithDeviceCode(challenge, cancelAuth::get);
 	}
 
-	public void reauthenticate(AccountRecord account, Consumer<AccountRecord> onSuccess, Consumer<String> onError) {
-		cancelAuth.set(false);
-		executor.execute(() -> {
-			try {
-				MicrosoftAuthService auth = new MicrosoftAuthService(
-						account.getClientId() == null || account.getClientId().isBlank()
-								? config.getMicrosoftClientId()
-								: account.getClientId()
-				);
-				MinecraftAuthResult result;
-				if (account.getRefreshToken() != null && !account.getRefreshToken().isBlank()) {
-					result = auth.refresh(account.getRefreshToken());
-				} else {
-					DeviceCodeChallenge challenge = auth.beginDeviceCode();
-					Minecraft.getInstance().execute(() -> {
-						/* UI may show code if needed — open browser immediately */
-					});
-					auth.openBrowser(challenge.getBrowserUri());
-					result = auth.pollAndAuthenticate(challenge, cancelAuth::get);
-				}
-				AccountRecord updated = fromResult(result);
-				updated.setId(account.getId());
-				updated.setFavorite(account.isFavorite());
-				updated.setAddedAt(account.getAddedAt());
-				store.addOrUpdate(updated);
-				skinCache.requestHead(updated.getUuid(), updated.getUsername(), updated.getSkinTextureHash());
-				Minecraft.getInstance().execute(() -> {
-					if (updated.getId().equals(store.getActiveAccountId())
-							|| updated.getUuid().equals(Minecraft.getInstance().getUser().getProfileId())) {
-						SessionSwitcher.apply(Minecraft.getInstance(), updated);
-						store.setActive(updated.getId());
-					}
-					onSuccess.accept(updated);
-				});
-			} catch (Exception e) {
-				account.setStatus(AccountRecord.AccountStatus.INVALID);
-				store.save();
-				Minecraft.getInstance().execute(() -> onError.accept(e.getMessage() == null ? "Reauthentication failed" : e.getMessage()));
+	private static UUID currentSessionUuid() {
+		var user = Minecraft.getInstance().getUser();
+		return user == null ? null : user.getProfileId();
+	}
+
+	public void switchTo(AccountRecord account) {
+		ensureFreshAsync(account, refreshed -> Minecraft.getInstance().execute(() -> doSwitch(refreshed, null)),
+				error -> Minecraft.getInstance().execute(() -> doSwitch(account, error)));
+	}
+
+	private void doSwitch(AccountRecord account, String refreshWarning) {
+		try {
+			SessionSwitcher.apply(Minecraft.getInstance(), account);
+			store.setActive(account.getId());
+			if (refreshWarning != null && !refreshWarning.isBlank()) {
+				statusMessage = "Signed in as " + account.getUsername() + " (" + refreshWarning + ")";
+			} else {
+				statusMessage = "Signed in as " + account.getUsername();
 			}
-		});
+		} catch (Throwable t) {
+			AccountSwitcherClient.LOGGER.error("Failed to switch to {}", account.getUsername(), t);
+			statusMessage = "Switch failed: " + (t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage());
+		}
 	}
 
 	public void remove(String id) {
@@ -171,9 +208,7 @@ public final class AccountManager {
 		if (removed == null || removed.getUuid() == null) {
 			return false;
 		}
-		var user = Minecraft.getInstance().getUser();
-		UUID current = user == null ? null : user.getProfileId();
-		return removed.getUuid().equals(current);
+		return removed.getUuid().equals(currentSessionUuid());
 	}
 
 	public void toggleFavorite(AccountRecord account) {
@@ -209,11 +244,11 @@ public final class AccountManager {
 		}
 		executor.execute(() -> {
 			try {
-				MicrosoftAuthService auth = new MicrosoftAuthService(
+				MicrosoftAuthService auth = new MicrosoftAuthService(AuthConstants.resolveClientId(
 						account.getClientId() == null || account.getClientId().isBlank()
 								? config.getMicrosoftClientId()
 								: account.getClientId()
-				);
+				));
 				MinecraftAuthResult result = auth.refresh(account.getRefreshToken());
 				AccountRecord updated = fromResult(result);
 				updated.setId(account.getId());

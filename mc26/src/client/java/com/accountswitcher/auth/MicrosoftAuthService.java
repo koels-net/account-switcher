@@ -16,14 +16,19 @@ import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
-import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.Callable;
-import java.util.function.Consumer;
+import java.util.function.BooleanSupplier;
 
 /**
- * Microsoft OAuth (device code) → Xbox Live → XSTS → Minecraft Services.
- * Opens the system browser so the player never copies tokens by hand.
+ * One Microsoft authentication pipeline shared by adding and re-authenticating accounts.
+ *
+ * <p>Uses the official Minecraft launcher public client id ({@code 00000000402b5328}) with the
+ * Live Connect {@code MBI_SSL} scope. Interactive sign-in uses the device-code grant on
+ * {@link AuthConstants#DEVICE_CODE_URL} — external browsers blank {@code oauth20_desktop.srf?code=}
+ * to {@code ?removed=true}, so clipboard/URL paste cannot complete that redirect.
+ *
+ * <p>Pipeline: Microsoft token (device code or refresh) → Xbox Live → XSTS → Minecraft
+ * {@code login_with_xbox} → profile.
  */
 public final class MicrosoftAuthService {
 	private final String clientId;
@@ -32,19 +37,28 @@ public final class MicrosoftAuthService {
 		this.clientId = clientId;
 	}
 
-	public DeviceCodeChallenge beginDeviceCode() throws IOException {
-		String body = "client_id=" + enc(clientId) + "&scope=" + enc(AuthConstants.SCOPE);
+	/**
+	 * Starts Live Connect device authorization. Show {@link DeviceCodeChallenge#getUserCode()} and
+	 * open {@link DeviceCodeChallenge#getBrowserUri()} for the player.
+	 */
+	public DeviceCodeChallenge requestDeviceCode() throws IOException, AuthException {
+		String body = "client_id=" + enc(clientId)
+				+ "&scope=" + enc(AuthConstants.SCOPE)
+				+ "&response_type=device_code";
 		JsonObject json = postForm(AuthConstants.DEVICE_CODE_URL, body);
-		String userCode = json.get("user_code").getAsString();
+		if (json.has("error")) {
+			throw new AuthException("Device code request failed: " + errorText(json));
+		}
+		String userCode = reqString(json, "user_code");
+		String deviceCode = reqString(json, "device_code");
 		String verificationUri = json.has("verification_uri")
 				? json.get("verification_uri").getAsString()
 				: "https://www.microsoft.com/link";
 		String verificationUriComplete = json.has("verification_uri_complete")
 				? json.get("verification_uri_complete").getAsString()
-				: null;
-		String deviceCode = json.get("device_code").getAsString();
-		int interval = json.has("interval") ? json.get("interval").getAsInt() : 5;
-		int expiresIn = json.has("expires_in") ? json.get("expires_in").getAsInt() : 900;
+				: "";
+		int interval = json.has("interval") ? Math.max(1, json.get("interval").getAsInt()) : 5;
+		long expiresIn = json.has("expires_in") ? json.get("expires_in").getAsLong() : 900L;
 		return new DeviceCodeChallenge(
 				userCode,
 				verificationUri,
@@ -55,6 +69,64 @@ public final class MicrosoftAuthService {
 		);
 	}
 
+	/**
+	 * Polls the token endpoint until the user finishes device-code sign-in, then completes Minecraft login.
+	 *
+	 * @param cancelled returns true when the user cancelled; checked between polls
+	 */
+	public MinecraftAuthResult authenticateWithDeviceCode(DeviceCodeChallenge challenge, BooleanSupplier cancelled)
+			throws Exception {
+		if (challenge == null || challenge.getDeviceCode() == null || challenge.getDeviceCode().isBlank()) {
+			throw new AuthException("No device code");
+		}
+		long deadline = challenge.getExpiresAtEpochMs();
+		int intervalMs = Math.max(1, challenge.getIntervalSeconds()) * 1000;
+		while (System.currentTimeMillis() < deadline) {
+			if (cancelled != null && cancelled.getAsBoolean()) {
+				throw new AuthCancelledException("Authentication cancelled");
+			}
+			JsonObject token = pollDeviceToken(challenge.getDeviceCode());
+			if (token.has("access_token")) {
+				String msAccess = token.get("access_token").getAsString();
+				String refresh = token.has("refresh_token") ? token.get("refresh_token").getAsString() : "";
+				return completeMinecraftLogin(msAccess, refresh);
+			}
+			String error = token.has("error") ? token.get("error").getAsString() : "";
+			if ("authorization_pending".equals(error) || "slow_down".equals(error)) {
+				if ("slow_down".equals(error)) {
+					intervalMs += 1000;
+				}
+				Thread.sleep(intervalMs);
+				continue;
+			}
+			if ("expired_token".equals(error) || "code_expired".equals(error)) {
+				throw new AuthException("Microsoft login timed out — try again");
+			}
+			if ("authorization_declined".equals(error) || "access_denied".equals(error)) {
+				throw new AuthCancelledException("Microsoft login declined");
+			}
+			throw new AuthException("Microsoft login failed: " + errorText(token));
+		}
+		throw new AuthException("Microsoft login timed out");
+	}
+
+	public MinecraftAuthResult refresh(String refreshToken) throws Exception {
+		if (refreshToken == null || refreshToken.isBlank()) {
+			throw new AuthException("Missing refresh token");
+		}
+		String body = "client_id=" + enc(clientId)
+				+ "&grant_type=refresh_token"
+				+ "&refresh_token=" + enc(refreshToken)
+				+ "&scope=" + enc(AuthConstants.SCOPE);
+		JsonObject token = postForm(AuthConstants.TOKEN_URL, body);
+		if (token.has("error")) {
+			throw new AuthException("Token refresh failed: " + errorText(token));
+		}
+		String msAccess = token.get("access_token").getAsString();
+		String newRefresh = token.has("refresh_token") ? token.get("refresh_token").getAsString() : refreshToken;
+		return completeMinecraftLogin(msAccess, newRefresh);
+	}
+
 	public void openBrowser(String url) {
 		try {
 			if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
@@ -63,7 +135,6 @@ public final class MicrosoftAuthService {
 			}
 		} catch (Exception ignored) {
 		}
-		// Fallback: try OS-specific open
 		try {
 			String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
 			ProcessBuilder pb;
@@ -80,52 +151,22 @@ public final class MicrosoftAuthService {
 		}
 	}
 
-	/**
-	 * Polls until the user completes login, then runs the Minecraft auth chain.
-	 */
-	public MinecraftAuthResult pollAndAuthenticate(DeviceCodeChallenge challenge, Callable<Boolean> cancelled) throws Exception {
-		while (System.currentTimeMillis() < challenge.getExpiresAtEpochMs()) {
-			if (Boolean.TRUE.equals(cancelled.call())) {
-				throw new AuthCancelledException("Authentication cancelled");
-			}
-			Thread.sleep(Math.max(1, challenge.getIntervalSeconds()) * 1000L);
-			JsonObject tokenResponse = tryPollToken(challenge.getDeviceCode());
-			if (tokenResponse == null) {
-				continue;
-			}
-			if (tokenResponse.has("error")) {
-				String error = tokenResponse.get("error").getAsString();
-				if ("authorization_pending".equals(error) || "slow_down".equals(error)) {
-					if ("slow_down".equals(error)) {
-						Thread.sleep(3000L);
-					}
-					continue;
-				}
-				throw new AuthException("Microsoft login failed: " + error);
-			}
-			String msAccess = tokenResponse.get("access_token").getAsString();
-			String refresh = tokenResponse.has("refresh_token") ? tokenResponse.get("refresh_token").getAsString() : "";
-			return completeMinecraftLogin(msAccess, refresh);
+	private JsonObject pollDeviceToken(String deviceCode) throws IOException {
+		// Live Connect + launcher id: RFC device_code grant (URN). Short form is a fallback.
+		String body = "client_id=" + enc(clientId)
+				+ "&grant_type=" + enc("urn:ietf:params:oauth:grant-type:device_code")
+				+ "&device_code=" + enc(deviceCode);
+		JsonObject token = postForm(AuthConstants.TOKEN_URL, body);
+		if (token.has("error") && "unsupported_grant_type".equals(token.get("error").getAsString())) {
+			body = "client_id=" + enc(clientId)
+					+ "&grant_type=device_code"
+					+ "&device_code=" + enc(deviceCode);
+			token = postForm(AuthConstants.TOKEN_URL, body);
 		}
-		throw new AuthException("Microsoft login timed out");
+		return token;
 	}
 
-	public MinecraftAuthResult refresh(String refreshToken) throws Exception {
-		if (refreshToken == null || refreshToken.isBlank()) {
-			throw new AuthException("Missing refresh token");
-		}
-		String body = "client_id=" + enc(clientId)
-				+ "&grant_type=refresh_token"
-				+ "&refresh_token=" + enc(refreshToken)
-				+ "&scope=" + enc(AuthConstants.SCOPE);
-		JsonObject tokenResponse = postForm(AuthConstants.TOKEN_URL, body);
-		if (tokenResponse.has("error")) {
-			throw new AuthException("Token refresh failed: " + tokenResponse.get("error").getAsString());
-		}
-		String msAccess = tokenResponse.get("access_token").getAsString();
-		String newRefresh = tokenResponse.has("refresh_token") ? tokenResponse.get("refresh_token").getAsString() : refreshToken;
-		return completeMinecraftLogin(msAccess, newRefresh);
-	}
+	// --- Shared tail of the pipeline -----------------------------------------------------------
 
 	private MinecraftAuthResult completeMinecraftLogin(String msAccessToken, String refreshToken) throws Exception {
 		XboxTokens xbl = authenticateXbox(msAccessToken);
@@ -140,31 +181,27 @@ public final class MicrosoftAuthService {
 		UUID uuid = parseUndashedUuid(profile.get("id").getAsString());
 		String skinHash = extractSkinHash(profile);
 
-		return new MinecraftAuthResult(
-				username,
-				uuid,
-				mcToken,
-				refreshToken,
-				xbl.userHash(),
-				clientId,
-				expiresAt,
-				null,
-				skinHash
-		);
+		return new MinecraftAuthResult(username, uuid, mcToken, refreshToken, xbl.userHash(), clientId, expiresAt, null, skinHash);
 	}
 
-	private JsonObject tryPollToken(String deviceCode) throws IOException {
-		String body = "grant_type=" + enc("urn:ietf:params:oauth:grant-type:device_code")
-				+ "&client_id=" + enc(clientId)
-				+ "&device_code=" + enc(deviceCode);
-		return postFormAllowError(AuthConstants.TOKEN_URL, body);
+	private XboxTokens authenticateXbox(String msAccessToken) throws IOException, AuthException {
+		// LIVE MBI_SSL tokens use the raw RpsTicket; AAD XboxLive.signin tokens need "d=". Prefer raw.
+		try {
+			return authenticateXbox(msAccessToken, false);
+		} catch (IOException first) {
+			try {
+				return authenticateXbox(msAccessToken, true);
+			} catch (IOException second) {
+				throw first;
+			}
+		}
 	}
 
-	private XboxTokens authenticateXbox(String msAccessToken) throws IOException {
+	private XboxTokens authenticateXbox(String msAccessToken, boolean withPrefix) throws IOException {
 		JsonObject props = new JsonObject();
 		props.addProperty("AuthMethod", "RPS");
 		props.addProperty("SiteName", "user.auth.xboxlive.com");
-		props.addProperty("RpsTicket", "d=" + msAccessToken);
+		props.addProperty("RpsTicket", (withPrefix ? "d=" : "") + msAccessToken);
 
 		JsonObject body = new JsonObject();
 		body.add("Properties", props);
@@ -237,15 +274,24 @@ public final class MicrosoftAuthService {
 		return UUID.fromString(dashed);
 	}
 
-	private static JsonObject postForm(String url, String body) throws IOException {
-		JsonObject json = postFormAllowError(url, body);
-		if (json.has("error") && !json.has("access_token") && !json.has("device_code")) {
-			throw new IOException("HTTP form error: " + json);
+	private static String reqString(JsonObject json, String key) throws AuthException {
+		if (!json.has(key) || json.get(key).isJsonNull()) {
+			throw new AuthException("Missing field in Microsoft response: " + key);
 		}
-		return json;
+		return json.get(key).getAsString();
 	}
 
-	private static JsonObject postFormAllowError(String url, String body) throws IOException {
+	private static String errorText(JsonObject json) {
+		String error = json.has("error") ? json.get("error").getAsString() : "unknown_error";
+		if (json.has("error_description")) {
+			return error + ": " + json.get("error_description").getAsString();
+		}
+		return error;
+	}
+
+	// --- HTTP helpers --------------------------------------------------------------------------
+
+	private static JsonObject postForm(String url, String body) throws IOException {
 		HttpURLConnection connection = (HttpURLConnection) URI.create(url).toURL().openConnection();
 		connection.setRequestMethod("POST");
 		connection.setDoOutput(true);
