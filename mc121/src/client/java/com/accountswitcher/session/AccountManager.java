@@ -122,7 +122,9 @@ public final class AccountManager {
 
 				Minecraft.getInstance().execute(() -> {
 					if (existing == null) {
-						switchTo(record);
+						// Fresh tokens — apply on this tick before the UI rebuilds, so the new
+						// account is active/selected immediately (switchTo() would defer a frame).
+						doSwitch(record, null);
 					} else if (record.getId().equals(store.getActiveAccountId())
 							|| record.getUuid().equals(currentSessionUuid())) {
 						SessionSwitcher.apply(Minecraft.getInstance(), record);

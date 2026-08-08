@@ -77,6 +77,22 @@ public final class AccountSwitcherScreen extends Screen {
 		this.list.replace(accounts);
 	}
 
+	private void selectInList(AccountRecord account) {
+		if (account == null || this.list == null) {
+			return;
+		}
+		for (AccountEntry entry : this.list.children()) {
+			if (account.getId() != null && account.getId().equals(entry.account.getId())) {
+				this.list.setSelected(entry);
+				return;
+			}
+			if (account.getUuid() != null && account.getUuid().equals(entry.account.getUuid())) {
+				this.list.setSelected(entry);
+				return;
+			}
+		}
+	}
+
 	private void cycleSort() {
 		sortMode = switch (sortMode) {
 			case LAST_USED -> AccountStore.SortMode.NAME;
@@ -117,6 +133,7 @@ public final class AccountSwitcherScreen extends Screen {
 		}, account -> {
 			addingAccount = false;
 			rebuildList();
+			selectInList(account);
 			feedback = Component.translatable("accountswitcher.added").getString();
 		}, error -> {
 			addingAccount = false;
