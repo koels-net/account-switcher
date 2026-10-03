@@ -1,0 +1,31 @@
+{
+	"schemaVersion": 1,
+	"id": "account-switcher",
+	"version": "${version}",
+	"name": "Account Switcher",
+	"description": "Vanilla-style Microsoft account switching. For Minecraft 26.3.",
+	"authors": [
+		"koels"
+	],
+	"contact": {},
+	"license": "MIT",
+	"icon": "assets/account-switcher/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"com.accountswitcher.AccountSwitcherClient"
+		]
+	},
+	"mixins": [
+		{
+			"config": "account-switcher.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.16.0",
+		"minecraft": ">=26.3 <26.4",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

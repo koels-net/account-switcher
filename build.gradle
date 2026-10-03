@@ -8,15 +8,17 @@
 
 //   mc26/build/libs/account-switcher-26-*.jar        (Minecraft 26.1–26.2)
 
+//   mc263/build/libs/account-switcher-26.3-*.jar     (Minecraft 26.3)
+
 
 
 tasks.register('buildAll') {
 
-	dependsOn ':mc121:build', ':mc1219:build', ':mc26:build'
+	dependsOn ':mc121:build', ':mc1219:build', ':mc26:build', ':mc263:build'
 
 	group = 'build'
 
-	description = 'Build all three Minecraft version lines'
+	description = 'Build all four Minecraft version lines'
 
 }
 

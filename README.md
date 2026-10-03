@@ -6,6 +6,7 @@ Vanilla-style Microsoft account switching — **two separate jars** for the two 
 |---|---|---|---|
 | `account-switcher-1.21-*.jar` | **1.21.4 – 1.21.11** | 21+ | Remap (obfuscated) |
 | `account-switcher-26-*.jar` | **26.1 – 26.2** | 25+ | No remap (unobfuscated) |
+| `account-switcher-26.3-*.jar` | **26.3** | 25+ | No remap (unobfuscated) |
 
 ## Build
 
@@ -17,12 +18,14 @@ Outputs:
 
 - `mc121/build/libs/account-switcher-1.21-1.0.0+1.21.jar`
 - `mc26/build/libs/account-switcher-26-1.0.0+26.jar`
+- `mc263/build/libs/account-switcher-26.3-1.0.0+26.3.jar`
 
 Or build one line:
 
 ```bat
 gradlew.bat :mc121:build
 gradlew.bat :mc26:build
+gradlew.bat :mc263:build
 ```
 
 ## Install
@@ -76,6 +79,7 @@ alongside the data, exactly as they could read the vanilla launcher's session. T
 ```
 mc121/   → 1.21.4–1.21.11 (compiled against 1.21.4)
 mc26/    → 26.1–26.2 (compiled against 26.1)
+mc263/   → 26.3 (compiled against 26.3)
 docs/    → versioning, hot-switching, testing
 ```
 
