@@ -1,14 +1,23 @@
 # In-Game Account Switcher (Fabric)
 
-Vanilla-style Microsoft account switching — **two separate jars** for the two Minecraft toolchains.
+Vanilla-style Microsoft account switching — **four separate jars**, one per Minecraft version range.
 
 | Jar | Minecraft | Java | Loom |
 |---|---|---|---|
-| `account-switcher-1.21-*.jar` | **1.21.4 – 1.21.11** | 21+ | Remap (obfuscated) |
+| `account-switcher-1.21.4-*.jar` | **1.21.4 – 1.21.8** | 21+ | Remap (obfuscated) |
+| `account-switcher-1.21.9-*.jar` | **1.21.9 – 1.21.11** | 21+ | Remap (obfuscated) |
 | `account-switcher-26-*.jar` | **26.1 – 26.2** | 25+ | No remap (unobfuscated) |
 | `account-switcher-26.3-*.jar` | **26.3** | 25+ | No remap (unobfuscated) |
 
 ## Build
+
+Requires a **JDK 25** (Gradle 9.5 does not run on newer JDKs). On Linux/macOS, point `JAVA_HOME` at it if it isn't your default:
+
+```bash
+./gradlew buildAll
+```
+
+On Windows:
 
 ```bat
 gradlew.bat buildAll
@@ -16,21 +25,23 @@ gradlew.bat buildAll
 
 Outputs:
 
-- `mc121/build/libs/account-switcher-1.21-1.0.0+1.21.jar`
+- `mc121/build/libs/account-switcher-1.21.4-1.0.0+1.21.4.jar`
+- `mc1219/build/libs/account-switcher-1.21.9-1.0.0+1.21.9.jar`
 - `mc26/build/libs/account-switcher-26-1.0.0+26.jar`
 - `mc263/build/libs/account-switcher-26.3-1.0.0+26.3.jar`
 
-Or build one line:
+Or build one line (use `gradlew.bat` on Windows):
 
-```bat
-gradlew.bat :mc121:build
-gradlew.bat :mc26:build
-gradlew.bat :mc263:build
+```bash
+./gradlew :mc121:build
+./gradlew :mc1219:build
+./gradlew :mc26:build
+./gradlew :mc263:build
 ```
 
 ## Install
 
-Put **only one** jar in your mods folder, matching your Minecraft version. Do not install both at once.
+Put **only one** jar in your mods folder, matching your Minecraft version. Do not install more than one.
 
 ## Features
 
@@ -77,8 +88,9 @@ alongside the data, exactly as they could read the vanilla launcher's session. T
 ## Project layout
 
 ```
-mc121/   → 1.21.4–1.21.11 (compiled against 1.21.4)
-mc26/    → 26.1–26.2 (compiled against 26.1)
+mc121/   → 1.21.4–1.21.8 (compiled against 1.21.4)
+mc1219/  → 1.21.9–1.21.11 (compiled against 1.21.9)
+mc26/    → 26.1–26.2 (compiled against 26.2)
 mc263/   → 26.3 (compiled against 26.3)
 docs/    → versioning, hot-switching, testing
 ```
